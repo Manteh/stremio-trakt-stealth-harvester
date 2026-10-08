@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 7088;
 const CACHE_FILE = path.join(__dirname, "trakt_cache.json");
 const KEY_FILE = path.join(__dirname, "trakt_key.json");
 
-let activeApiKey = "201dc70c5ec6af530f12f079ea1922733f6e1085ad7b02f36d8e011b75bcea7d";
+let activeApiKey = process.env.TRAKT_API_KEY || "201dc70c5ec6af530f12f079ea1922733f6e1085ad7b02f36d8e011b75bcea7d";
 
 if (fs.existsSync(KEY_FILE)) {
   try {
