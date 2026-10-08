@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 
@@ -116,12 +117,17 @@ function formatMeta(entry, type) {
     posterUrl = `https://${media.images.poster[0]}`;
   }
 
+  let desc = media.overview || media.tagline || "";
+  if (typeof desc === "string") {
+    desc = desc.replace(/[\x00-\x1F\x7F]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
   return {
     id: imdbId,
     type: type,
-    name: media.title,
+    name: media.title || "Untitled",
     poster: posterUrl,
-    description: media.overview || (media.tagline ? `"${media.tagline}"` : ""),
+    description: desc,
     releaseInfo: media.year ? `${media.year}` : undefined,
     imdbRating: media.rating ? media.rating.toFixed(1) : undefined,
     genres: (media.genres || []).map(g => g.charAt(0).toUpperCase() + g.slice(1))
@@ -294,6 +300,29 @@ const manifest = {
   ]
 };
 
+// Helper: Send JSON with exact Content-Length, optional gzip, and edge caching
+function sendJson(req, res, statusCode, data) {
+  const jsonStr = JSON.stringify(data);
+  const buffer = Buffer.from(jsonStr, "utf-8");
+
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Cache-Control", "public, max-age=600");
+
+  const acceptEncoding = req.headers["accept-encoding"] || "";
+  if (acceptEncoding.includes("gzip") && buffer.length > 512) {
+    const compressed = zlib.gzipSync(buffer);
+    res.setHeader("Content-Encoding", "gzip");
+    res.setHeader("Content-Length", compressed.length);
+    res.end(compressed);
+  } else {
+    res.setHeader("Content-Length", buffer.length);
+    res.end(buffer);
+  }
+}
+
 // HTTP Server with Universal URL Parser (Supports Path + Query params + On-demand pages)
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -346,10 +375,8 @@ const server = http.createServer(async (req, res) => {
 </html>`);
   }
 
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-
   if (pathname === "/manifest.json" || pathname === "/") {
-    return res.end(JSON.stringify(manifest));
+    return sendJson(req, res, 200, manifest);
   }
 
   // Matches: /catalog/:type/:id.json OR /catalog/:type/:id/:extra.json
@@ -375,14 +402,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     let items = CACHE[id] || [];
+    const PAGE_SIZE = 50;
 
     // If skip requires items beyond what is currently in cache, fetch on-demand!
-    if (skip + 100 > items.length && id !== "trakt_boxoffice") {
+    if (skip + PAGE_SIZE > items.length && id !== "trakt_boxoffice") {
       const targetPage = Math.floor(skip / 100) + 1;
       console.log(`[On-Demand] Fetching live page ${targetPage} for ${id} (skip=${skip})...`);
       const extraItems = await fetchPage(id, targetPage);
       if (extraItems.length) {
-        // Append to cache
         CACHE[id] = [...items, ...extraItems];
         items = CACHE[id];
       }
@@ -395,14 +422,17 @@ const server = http.createServer(async (req, res) => {
       );
     }
 
-    // Return slice based on skip
-    const paginatedMetas = items.slice(skip, skip + 100);
-    return res.end(JSON.stringify({ metas: paginatedMetas }));
+    // Return slice based on skip (50 items for optimal speed & stability)
+    const paginatedMetas = items.slice(skip, skip + PAGE_SIZE);
+    return sendJson(req, res, 200, { metas: paginatedMetas });
   }
 
-  res.statusCode = 404;
-  res.end(JSON.stringify({ error: "Not found" }));
+  return sendJson(req, res, 404, { error: "Not found" });
 });
+
+// Configure keep-alive timeouts to prevent proxy connection truncation
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 async function main() {
   server.listen(PORT, "0.0.0.0", () => {
@@ -412,7 +442,8 @@ async function main() {
     console.log(`======================================================\n`);
   });
 
-  await refreshAllFeeds();
+  // Delay background refresh so startup is instantaneous and does not choke CPU
+  setTimeout(refreshAllFeeds, 5 * 60 * 1000);
   setInterval(refreshAllFeeds, 30 * 60 * 1000);
 }
 
