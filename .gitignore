@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+*.jpg
+*.png
+trakt_key.json

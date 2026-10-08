@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: stremio-trakt-harvester
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: PUPPETEER_SKIP_DOWNLOAD=true npm install
+    startCommand: node index.js
+    envVars:
+      - key: PORT
+        value: 10000
